@@ -29,9 +29,12 @@ fn render_condition(condition: &Condition) -> String {
 
 #[derive(Debug, Default)]
 pub struct QueryBuilder {
-    base_select: String,
+    /// SELECT items (defaults to ["*"])
+    select_items: Vec<String>,
     graph_expansions: Vec<String>,
     traverse_clauses: Vec<String>,
+    /// Whether to include DISTINCT in the SELECT clause.
+    distinct: bool,
     from_table: Option<String>,
     fetch_clauses: Vec<String>,
     where_clauses: Vec<Condition>,
@@ -43,15 +46,27 @@ pub struct QueryBuilder {
 impl QueryBuilder {
     /// Creates a new `QueryBuilder` instance, defaulting to `SELECT *`.
     pub fn new() -> Self {
-        Self {
-            base_select: "*".to_string(),
+        let mut qb = Self {
+            select_items: vec!["*".to_string()],
             ..Default::default()
-        }
+        };
+        qb.distinct = false;
+        qb
     }
 
-    /// Sets the base fields to select (e.g., "id, title"). Defaults to "*".
-    pub fn select(&mut self, fields: &str) -> &mut Self {
-        self.base_select = fields.to_string();
+    /// Adds a field or expression to select, with optional alias.
+    /// Example: `.select("col", Some("alias"))` yields `col AS alias`.
+    pub fn select(&mut self, expr: &str, alias: Option<&str>) -> &mut Self {
+        // clear default '*' on first custom select
+        if self.select_items.len() == 1 && self.select_items[0] == "*" {
+            self.select_items.clear();
+        }
+        let item = if let Some(a) = alias {
+            format!("{} AS {}", expr, a)
+        } else {
+            expr.to_string()
+        };
+        self.select_items.push(item);
         self
     }
     
@@ -75,7 +90,7 @@ impl QueryBuilder {
 
     /// A convenience shortcut to add a simple, raw condition string.
     /// This is equivalent to `add_condition(Condition::Simple(...))`.
-    pub fn r#where(&mut self, condition: &str) -> &mut Self {
+    pub fn where_simple(&mut self, condition: &str) -> &mut Self {
         self.where_clauses.push(Condition::Simple(condition.to_string()));
         self
     }
@@ -104,16 +119,28 @@ impl QueryBuilder {
         self.start = Some(offset);
         self
     }
+
+    /// Enables DISTINCT in the SELECT clause.
+    pub fn distinct(&mut self) -> &mut Self {
+        self.distinct = true;
+        self
+    }
+    
     
     /// Assembles all the pieces into a final SurrealQL query string.
     pub fn build(&self) -> Result<String, &'static str> {
         let from_table = self.from_table.as_ref().ok_or("The FROM clause is required.")?;
 
-        let mut all_selects = vec![self.base_select.clone()];
+        let mut all_selects = self.select_items.clone();
         all_selects.extend(self.graph_expansions.iter().cloned());
         let final_select_clause = all_selects.join(", ");
 
-        let mut query = format!("SELECT {} FROM {}", final_select_clause, from_table);
+        // build SELECT or SELECT DISTINCT
+        let mut query = if self.distinct {
+            format!("SELECT DISTINCT {} FROM {}", final_select_clause, from_table)
+        } else {
+            format!("SELECT {} FROM {}", final_select_clause, from_table)
+        };
         // insert any graph_traverse clauses after FROM
         if !self.traverse_clauses.is_empty() {
             for clause in &self.traverse_clauses {
@@ -205,9 +232,9 @@ mod tests {
     #[test]
     fn select_where_order_limit_start() {
         let sql = QueryBuilder::new()
-            .select("id, name")
+            .select("id, name", None)
             .from("user")
-            .r#where("active = true")
+            .where_simple("active = true")
             .order_by("name ASC")
             .limit(5)
             .start(10)
@@ -266,7 +293,7 @@ mod tests {
     #[test]
     fn select_and_graph_expand() {
         let sql = QueryBuilder::new()
-            .select("foo")
+            .select("foo", None)
             .graph_expand("bar")
             .from("t")
             .build()
@@ -278,7 +305,7 @@ mod tests {
     fn where_and_where_complex_equal() {
         let simple = QueryBuilder::new()
             .from("t")
-            .r#where("x = 1")
+            .where_simple("x = 1")
             .build()
             .unwrap();
         let complex = QueryBuilder::new()
@@ -292,9 +319,9 @@ mod tests {
     #[test]
     fn full_chaining_all_clauses() {
         let sql = QueryBuilder::new()
-            .select("a")
+            .select("a", None)
             .from("t")
-            .r#where("w")
+            .where_simple("w")
             .fetch("f")
             .graph_expand("g")
             .order_by("o")
@@ -331,5 +358,70 @@ mod tests {
             .build()
             .unwrap();
         assert_eq!(sql, "SELECT * FROM x <-t->e.*");
+    }
+
+    #[test]
+    fn distinct_basic() {
+        let sql = QueryBuilder::new()
+            .distinct()
+            .from("user")
+            .build()
+            .unwrap();
+        assert_eq!(sql, "SELECT DISTINCT * FROM user");
+    }
+
+    #[test]
+    fn distinct_with_fields() {
+        let sql = QueryBuilder::new()
+            .distinct()
+            .select("id, name", None)
+            .from("user")
+            .build()
+            .unwrap();
+        assert_eq!(sql, "SELECT DISTINCT id, name FROM user");
+    }
+
+    #[test]
+    fn distinct_with_graph_expand() {
+        let sql = QueryBuilder::new()
+            .distinct()
+            .select("foo", None)
+            .graph_expand("bar")
+            .from("t")
+            .build()
+            .unwrap();
+        assert_eq!(sql, "SELECT DISTINCT foo, bar FROM t");
+    }
+
+    #[test]
+    fn multiple_selects() {
+        let sql = QueryBuilder::new()
+            .select("id", None)
+            .select("name", None)
+            .from("users")
+            .build()
+            .unwrap();
+        assert_eq!(sql, "SELECT id, name FROM users");
+    }
+
+    #[test]
+    fn select_with_alias() {
+        let sql = QueryBuilder::new()
+            .select("user_id", Some("uid"))
+            .from("accounts")
+            .build()
+            .unwrap();
+        assert_eq!(sql, "SELECT user_id AS uid FROM accounts");
+    }
+
+    #[test]
+    fn mixed_select_alias_and_plain() {
+        let sql = QueryBuilder::new()
+            .select("user_id", Some("uid"))
+            .select("name", None)
+            .from("accounts")
+            .build()
+            .unwrap();
+        assert_eq!(sql, "SELECT user_id AS uid, name FROM accounts");
     }
 }
