@@ -3,5 +3,10 @@ name = "surrealex"
 version = "0.1.0"
 edition = "2024"
 description = "Dead simple SurrealDB query generator"
+readme = "README.md"
+keywords = ["surrealdb", "surrealql", "query-builder", "rust"]
+categories = ["databases", "data-structures", "command-line-utilities"]
+license = "MIT"
+repository = "https://github.com/MordechaiHadad/surrealex"
 
 [dependencies]
