@@ -154,11 +154,6 @@ impl QueryBuilder {
             query.push_str(" WHERE ");
             query.push_str(&rendered.join(" AND "));
         }
-        // then apply FETCH, etc.
-        if !self.fetch_clauses.is_empty() {
-            query.push_str(" FETCH ");
-            query.push_str(&self.fetch_clauses.join(", "));
-        }
         
         if !self.order_by.is_empty() {
             query.push_str(" ORDER BY ");
@@ -171,6 +166,11 @@ impl QueryBuilder {
 
         if let Some(start) = self.start {
             query.push_str(&format!(" START {}", start));
+        }
+        
+        if !self.fetch_clauses.is_empty() {
+            query.push_str(" FETCH ");
+            query.push_str(&self.fetch_clauses.join(", "));
         }
         
         Ok(query)
@@ -329,7 +329,7 @@ mod tests {
             .start(2)
             .build()
             .unwrap();
-        assert_eq!(sql, "SELECT a, g FROM t WHERE w FETCH f ORDER BY o LIMIT 1 START 2");
+        assert_eq!(sql, "SELECT a, g FROM t WHERE w ORDER BY o LIMIT 1 START 2 FETCH f");
     }
 
     #[test]
