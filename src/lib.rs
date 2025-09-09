@@ -311,7 +311,9 @@ pub struct TransactionBuilder {
 impl TransactionBuilder {
     /// Create a new empty transaction builder.
     pub fn new() -> Self {
-        Self { statements: Vec::new() }
+        Self {
+            statements: Vec::new(),
+        }
     }
 
     /// Start the transaction block. Uses `BEGIN TRANSACTION;`.
@@ -338,7 +340,11 @@ impl TransactionBuilder {
     }
 
     /// Add a `QueryBuilder`'s built query with a suffix (e.g., `[0].count`).
-    pub fn add_query_with_suffix(&mut self, qb: &QueryBuilder, suffix: &str) -> Result<&mut Self, &'static str> {
+    pub fn add_query_with_suffix(
+        &mut self,
+        qb: &QueryBuilder,
+        suffix: &str,
+    ) -> Result<&mut Self, &'static str> {
         let q = qb.build()?;
         Ok(self.add_statement(&format!("({}){}", q, suffix)))
     }
