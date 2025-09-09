@@ -293,7 +293,7 @@ impl ScriptBuilder {
         out.push_str("RETURN { ");
         let pairs: Vec<String> = ret.iter().map(|(k, v)| format!("{}: {}", k, v)).collect();
         out.push_str(&pairs.join(", "));
-        out.push_str(" }");
+        out.push_str(" }; ");
         Ok(out)
     }
 }
@@ -623,7 +623,7 @@ mod tests {
             ]);
 
         let script = sb.build().unwrap();
-        let expected = "LET $widget_list = (SELECT * FROM widget WHERE status != \"archived\");\nLET $widget_count = (SELECT count() FROM widget WHERE status != \"archived\")[0].count;\nRETURN { widgets: $widget_list, count: $widget_count }";
+        let expected = "LET $widget_list = (SELECT * FROM widget WHERE status != \"archived\");\nLET $widget_count = (SELECT count() FROM widget WHERE status != \"archived\")[0].count;\nRETURN { widgets: $widget_list, count: $widget_count }; ";
         assert_eq!(script, expected);
     }
 
