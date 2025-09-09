@@ -69,7 +69,7 @@ impl QueryBuilder {
         self.select_items.push(item);
         self
     }
-    
+
     /// Sets the table to select data FROM. This is a required clause.
     pub fn from(&mut self, table: &str) -> &mut Self {
         self.from_table = Some(table.to_string());
@@ -81,7 +81,7 @@ impl QueryBuilder {
         self.fetch_clauses.push(field.to_string());
         self
     }
-    
+
     /// Adds a graph traversal or complex projection to the SELECT list.
     pub fn graph_expand(&mut self, expansion_clause: &str) -> &mut Self {
         self.graph_expansions.push(expansion_clause.to_string());
@@ -91,10 +91,11 @@ impl QueryBuilder {
     /// A convenience shortcut to add a simple, raw condition string.
     /// This is equivalent to `add_condition(Condition::Simple(...))`.
     pub fn where_simple(&mut self, condition: &str) -> &mut Self {
-        self.where_clauses.push(Condition::Simple(condition.to_string()));
+        self.where_clauses
+            .push(Condition::Simple(condition.to_string()));
         self
     }
-    
+
     /// Adds a complex `Condition` to the WHERE clause. All top-level
     /// conditions are joined by AND.
     pub fn where_complex(&mut self, condition: Condition) -> &mut Self {
@@ -125,36 +126,42 @@ impl QueryBuilder {
         self.distinct = true;
         self
     }
-    
-    
-    /// Assembles all the pieces into a final SurrealQL query string.
+
     pub fn build(&self) -> Result<String, &'static str> {
-        let from_table = self.from_table.as_ref().ok_or("The FROM clause is required.")?;
+        let from_table = self
+            .from_table
+            .as_ref()
+            .ok_or("The FROM clause is required.")?;
 
         let mut all_selects = self.select_items.clone();
         all_selects.extend(self.graph_expansions.iter().cloned());
         let final_select_clause = all_selects.join(", ");
 
-        // build SELECT or SELECT DISTINCT
         let mut query = if self.distinct {
-            format!("SELECT DISTINCT {} FROM {}", final_select_clause, from_table)
+            format!(
+                "SELECT DISTINCT {} FROM {}",
+                final_select_clause, from_table
+            )
         } else {
             format!("SELECT {} FROM {}", final_select_clause, from_table)
         };
-        // insert any graph_traverse clauses after FROM
         if !self.traverse_clauses.is_empty() {
             for clause in &self.traverse_clauses {
                 query.push(' ');
                 query.push_str(clause);
             }
         }
-        // then apply WHERE clause
+
         if !self.where_clauses.is_empty() {
-            let rendered: Vec<String> = self.where_clauses.iter().map(|c| render_condition(c)).collect();
+            let rendered: Vec<String> = self
+                .where_clauses
+                .iter()
+                .map(|c| render_condition(c))
+                .collect();
             query.push_str(" WHERE ");
             query.push_str(&rendered.join(" AND "));
         }
-        
+
         if !self.order_by.is_empty() {
             query.push_str(" ORDER BY ");
             query.push_str(&self.order_by.join(", "));
@@ -167,12 +174,12 @@ impl QueryBuilder {
         if let Some(start) = self.start {
             query.push_str(&format!(" START {}", start));
         }
-        
+
         if !self.fetch_clauses.is_empty() {
             query.push_str(" FETCH ");
             query.push_str(&self.fetch_clauses.join(", "));
         }
-        
+
         Ok(query)
     }
 
@@ -180,9 +187,11 @@ impl QueryBuilder {
     pub fn graph_traverse(&mut self, params: GraphExpandParams) -> &mut Self {
         let mut clause = String::new();
         let (ref dir1, ref tbl1) = params.from;
-        clause.push_str(match dir1 { Direction::Out => "->", Direction::In => "<-" });
+        clause.push_str(match dir1 {
+            Direction::Out => "->",
+            Direction::In => "<-",
+        });
         clause.push_str(tbl1);
-        // always expand outgoing from intermediate results
         let tbl2 = &params.to.1;
         clause.push_str("->");
         clause.push_str(tbl2);
@@ -193,6 +202,169 @@ impl QueryBuilder {
         }
         self.traverse_clauses.push(clause);
         self
+    }
+}
+
+/// Helper to build a SurrealQL script composed of `LET` assignments and a final `RETURN` object.
+///
+/// Example:
+/// ```rust,ignore
+/// let mut sb = ScriptBuilder::new();
+/// let q = QueryBuilder::new().from("widget").where_simple("active = true");
+/// sb.let_query("widgets", &q).unwrap();
+/// sb.returning(vec![("items", "$widgets")]);
+/// ```
+#[derive(Debug, Default)]
+pub struct ScriptBuilder {
+    statements: Vec<String>,
+    return_map: Option<Vec<(String, String)>>,
+}
+
+impl ScriptBuilder {
+    /// Create a new empty script builder.
+    pub fn new() -> Self {
+        Self {
+            statements: Vec::new(),
+            return_map: None,
+        }
+    }
+
+    /// Add a raw LET assignment where the expression is wrapped in parentheses.
+    /// Example: let $name = (SELECT * FROM t WHERE ...);
+    pub fn let_raw(&mut self, name: &str, expr: &str) -> &mut Self {
+        let s = format!("LET ${} = ({});", name, expr);
+        self.statements.push(s);
+        self
+    }
+
+    /// Add a LET assignment where the expression is wrapped in parentheses and
+    /// a suffix (like an index or field access) is appended outside the
+    /// parentheses. Example suffix: "[0].count" -> (SELECT ...)[0].count
+    pub fn let_raw_with_suffix(&mut self, name: &str, expr: &str, suffix: &str) -> &mut Self {
+        let s = format!("LET ${} = ({}){};", name, expr, suffix);
+        self.statements.push(s);
+        self
+    }
+
+    /// Accept a `QueryBuilder`, build its query string and create a LET
+    /// assignment using the built query. Returns Err if the inner query
+    /// cannot be built.
+    pub fn let_query(&mut self, name: &str, qb: &QueryBuilder) -> Result<&mut Self, &'static str> {
+        let q = qb.build()?;
+        Ok(self.let_raw(name, &q))
+    }
+
+    /// Same as `let_query` but allows appending a suffix (for indexing / field access)
+    /// outside the parenthesized expression.
+    pub fn let_query_with_suffix(
+        &mut self,
+        name: &str,
+        qb: &QueryBuilder,
+        suffix: &str,
+    ) -> Result<&mut Self, &'static str> {
+        let q = qb.build()?;
+        Ok(self.let_raw_with_suffix(name, &q, suffix))
+    }
+
+    /// Provide the return mapping as a list of (key, value) pairs. Values are
+    /// verbatim strings (e.g. `$product` or an expression).
+    pub fn returning(&mut self, map: Vec<(&str, &str)>) -> &mut Self {
+        self.return_map = Some(
+            map.into_iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+        );
+        self
+    }
+
+    /// Build the final script string.
+    pub fn build(&self) -> Result<String, &'static str> {
+        let ret = match &self.return_map {
+            Some(m) if !m.is_empty() => m,
+            _ => return Err("A return object is required."),
+        };
+
+        let mut out = String::new();
+        for st in &self.statements {
+            out.push_str(st);
+            out.push('\n');
+        }
+
+        out.push_str("RETURN { ");
+        let pairs: Vec<String> = ret.iter().map(|(k, v)| format!("{}: {}", k, v)).collect();
+        out.push_str(&pairs.join(", "));
+        out.push_str(" }");
+        Ok(out)
+    }
+}
+
+/// Builder for SurrealQL transactions.
+///
+/// Usage: create a TransactionBuilder, call `begin()`, add statements (raw strings,
+/// queries from `QueryBuilder`, or full `ScriptBuilder` scripts), then `commit()` or
+/// `cancel()` and `build()` to get the final SurrealQL transaction script.
+#[derive(Debug, Default)]
+pub struct TransactionBuilder {
+    statements: Vec<String>,
+}
+
+impl TransactionBuilder {
+    /// Create a new empty transaction builder.
+    pub fn new() -> Self {
+        Self { statements: Vec::new() }
+    }
+
+    /// Start the transaction block. Uses `BEGIN TRANSACTION;`.
+    pub fn begin(&mut self) -> &mut Self {
+        self.statements.push("BEGIN TRANSACTION;".to_string());
+        self
+    }
+
+    /// Add a raw statement (will be terminated with a semicolon if missing).
+    pub fn add_statement(&mut self, stmt: &str) -> &mut Self {
+        let s = stmt.trim();
+        if s.ends_with(';') {
+            self.statements.push(s.to_string());
+        } else {
+            self.statements.push(format!("{};", s));
+        }
+        self
+    }
+
+    /// Add a `QueryBuilder`'s built query as a statement.
+    pub fn add_query(&mut self, qb: &QueryBuilder) -> Result<&mut Self, &'static str> {
+        let q = qb.build()?;
+        Ok(self.add_statement(&q))
+    }
+
+    /// Add a `QueryBuilder`'s built query with a suffix (e.g., `[0].count`).
+    pub fn add_query_with_suffix(&mut self, qb: &QueryBuilder, suffix: &str) -> Result<&mut Self, &'static str> {
+        let q = qb.build()?;
+        Ok(self.add_statement(&format!("({}){}", q, suffix)))
+    }
+
+    /// Add an entire `ScriptBuilder` script (it may contain multiple lines).
+    pub fn add_script(&mut self, script: &str) -> &mut Self {
+        // push verbatim; the script may contain its own semicolons and newlines
+        self.statements.push(script.to_string());
+        self
+    }
+
+    /// Add a COMMIT statement. Use this to finalise the transaction.
+    pub fn commit(&mut self) -> &mut Self {
+        self.statements.push("COMMIT TRANSACTION;".to_string());
+        self
+    }
+
+    /// Add a CANCEL statement. Use this to rollback the transaction.
+    pub fn cancel(&mut self) -> &mut Self {
+        self.statements.push("CANCEL TRANSACTION;".to_string());
+        self
+    }
+
+    /// Build the final transaction script as a single string.
+    pub fn build(&self) -> String {
+        self.statements.join("\n")
     }
 }
 
@@ -222,10 +394,7 @@ mod tests {
 
     #[test]
     fn simple_select_from() {
-        let sql = QueryBuilder::new()
-            .from("user")
-            .build()
-            .unwrap();
+        let sql = QueryBuilder::new().from("user").build().unwrap();
         assert_eq!(sql, "SELECT * FROM user");
     }
 
@@ -240,7 +409,10 @@ mod tests {
             .start(10)
             .build()
             .unwrap();
-        assert_eq!(sql, "SELECT id, name FROM user WHERE active = true ORDER BY name ASC LIMIT 5 START 10");
+        assert_eq!(
+            sql,
+            "SELECT id, name FROM user WHERE active = true ORDER BY name ASC LIMIT 5 START 10"
+        );
     }
 
     #[test]
@@ -329,7 +501,10 @@ mod tests {
             .start(2)
             .build()
             .unwrap();
-        assert_eq!(sql, "SELECT a, g FROM t WHERE w ORDER BY o LIMIT 1 START 2 FETCH f");
+        assert_eq!(
+            sql,
+            "SELECT a, g FROM t WHERE w ORDER BY o LIMIT 1 START 2 FETCH f"
+        );
     }
 
     #[test]
@@ -362,11 +537,7 @@ mod tests {
 
     #[test]
     fn distinct_basic() {
-        let sql = QueryBuilder::new()
-            .distinct()
-            .from("user")
-            .build()
-            .unwrap();
+        let sql = QueryBuilder::new().distinct().from("user").build().unwrap();
         assert_eq!(sql, "SELECT DISTINCT * FROM user");
     }
 
@@ -423,5 +594,62 @@ mod tests {
             .build()
             .unwrap();
         assert_eq!(sql, "SELECT user_id AS uid, name FROM accounts");
+    }
+
+    #[test]
+    fn script_builder_example() {
+        // Build inner queries with QueryBuilder for `widget`
+        let mut qb1 = QueryBuilder::new();
+        qb1.from("widget").where_simple("status != \"archived\"");
+        let mut qb2 = QueryBuilder::new();
+        qb2.select("count()", None)
+            .from("widget")
+            .where_simple("status != \"archived\"");
+
+        let mut sb = super::ScriptBuilder::new();
+        sb.let_query("widget_list", &qb1)
+            .unwrap()
+            .let_query_with_suffix("widget_count", &qb2, "[0].count")
+            .unwrap()
+            .returning(vec![
+                ("widgets", "$widget_list"),
+                ("count", "$widget_count"),
+            ]);
+
+        let script = sb.build().unwrap();
+        let expected = "LET $widget_list = (SELECT * FROM widget WHERE status != \"archived\");\nLET $widget_count = (SELECT count() FROM widget WHERE status != \"archived\")[0].count;\nRETURN { widgets: $widget_list, count: $widget_count }";
+        assert_eq!(script, expected);
+    }
+
+    #[test]
+    fn transaction_builder_commit_example() {
+        let mut qb_create1 = QueryBuilder::new();
+        qb_create1.from("widget:one").select("", None); // will produce SELECT * FROM widget:one but used as example
+
+        let mut tb = super::TransactionBuilder::new();
+        tb.begin()
+            .add_statement("CREATE widget:one SET value = 100")
+            .add_statement("CREATE widget:two SET value = 50")
+            .add_statement("UPDATE widget:one SET value += 10")
+            .add_statement("UPDATE widget:two SET value -= 10")
+            .commit();
+
+        let script = tb.build();
+        let expected_start = "BEGIN TRANSACTION;\nCREATE widget:one SET value = 100;";
+        assert!(script.starts_with(expected_start));
+        assert!(script.contains("COMMIT TRANSACTION;"));
+    }
+
+    #[test]
+    fn transaction_builder_cancel_example() {
+        let mut tb = super::TransactionBuilder::new();
+        tb.begin()
+            .add_statement("CREATE widget:one SET value = 100")
+            .add_statement("UPDATE widget:one SET value -= 200")
+            .cancel();
+
+        let script = tb.build();
+        assert!(script.contains("CANCEL TRANSACTION;"));
+        assert!(script.contains("CREATE widget:one SET value = 100;"));
     }
 }
