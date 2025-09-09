@@ -658,4 +658,34 @@ mod tests {
         assert!(script.contains("CANCEL TRANSACTION;"));
         assert!(script.contains("CREATE widget:one SET value = 100;"));
     }
+
+    #[test]
+    fn transaction_with_two_selects_and_return() {
+        let mut qb1 = QueryBuilder::new();
+        qb1.from("widget").where_simple("status != \"archived\"");
+
+        let mut qb2 = QueryBuilder::new();
+        qb2.select("count()", None)
+            .from("widget")
+            .where_simple("status != \"archived\"");
+
+        let mut sb = super::ScriptBuilder::new();
+        sb.let_query("widget_list", &qb1)
+            .unwrap()
+            .let_query_with_suffix("widget_count", &qb2, "[0].count")
+            .unwrap()
+            .returning(vec![
+                ("widgets", "$widget_list"),
+                ("count", "$widget_count"),
+            ]);
+
+        let inner = sb.build().unwrap();
+
+        let mut tb = super::TransactionBuilder::new();
+        tb.begin().add_script(&inner).commit();
+
+        let script = tb.build();
+        let expected = format!("BEGIN TRANSACTION;\n{}\nCOMMIT TRANSACTION;", inner);
+        assert_eq!(script.trim_end(), expected.trim_end());
+    }
 }
