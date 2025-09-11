@@ -16,12 +16,10 @@ fn render_condition(condition: &Condition) -> String {
         Condition::Simple(s) => s.clone(),
         Condition::And(conditions) => {
             let rendered: Vec<String> = conditions.iter().map(render_condition).collect();
-            // Wrap in parentheses to ensure correct precedence when nested.
             format!("({})", rendered.join(" AND "))
         }
         Condition::Or(conditions) => {
             let rendered: Vec<String> = conditions.iter().map(render_condition).collect();
-            // Parentheses are crucial for OR groups.
             format!("({})", rendered.join(" OR "))
         }
     }
@@ -33,6 +31,8 @@ pub struct QueryBuilder {
     select_items: Vec<String>,
     graph_expansions: Vec<String>,
     traverse_clauses: Vec<String>,
+    group_by_fields: Vec<String>,
+    group_all: bool,
     /// Whether to include DISTINCT in the SELECT clause.
     distinct: bool,
     from_table: Option<String>,
@@ -48,6 +48,8 @@ impl QueryBuilder {
     pub fn new() -> Self {
         let mut qb = Self {
             select_items: vec!["*".to_string()],
+            group_by_fields: Vec::new(),
+            group_all: false,
             ..Default::default()
         };
         qb.distinct = false;
@@ -57,7 +59,6 @@ impl QueryBuilder {
     /// Adds a field or expression to select, with optional alias.
     /// Example: `.select("col", Some("alias"))` yields `col AS alias`.
     pub fn select(&mut self, expr: &str, alias: Option<&str>) -> &mut Self {
-        // clear default '*' on first custom select
         if self.select_items.len() == 1 && self.select_items[0] == "*" {
             self.select_items.clear();
         }
@@ -106,6 +107,18 @@ impl QueryBuilder {
     /// Adds an ORDER BY clause. Can be called multiple times.
     pub fn order_by(&mut self, field_and_direction: &str) -> &mut Self {
         self.order_by.push(field_and_direction.to_string());
+        self
+    }
+
+    /// Add a GROUP BY field expression. Can be called multiple times to group by multiple fields.
+    pub fn group_by(&mut self, expr: &str) -> &mut Self {
+        self.group_by_fields.push(expr.to_string());
+        self
+    }
+
+    /// Use GROUP ALL to aggregate over the entire selection.
+    pub fn group_all(&mut self) -> &mut Self {
+        self.group_all = true;
         self
     }
 
@@ -160,6 +173,14 @@ impl QueryBuilder {
                 .collect();
             query.push_str(" WHERE ");
             query.push_str(&rendered.join(" AND "));
+        }
+
+        // GROUP BY / GROUP ALL
+        if self.group_all {
+            query.push_str(" GROUP ALL");
+        } else if !self.group_by_fields.is_empty() {
+            query.push_str(" GROUP BY ");
+            query.push_str(&self.group_by_fields.join(", "));
         }
 
         if !self.order_by.is_empty() {
@@ -568,6 +589,28 @@ mod tests {
             .build()
             .unwrap();
         assert_eq!(sql, "SELECT DISTINCT foo, bar FROM t");
+    }
+
+    #[test]
+    fn group_by_basic() {
+        let sql = QueryBuilder::new()
+            .select("country, count()", None)
+            .from("person")
+            .group_by("country")
+            .build()
+            .unwrap();
+        assert_eq!(sql, "SELECT country, count() FROM person GROUP BY country");
+    }
+
+    #[test]
+    fn group_all_and_having() {
+        let sql = QueryBuilder::new()
+            .select("count()", None)
+            .from("person")
+            .group_all()
+            .build()
+            .unwrap();
+        assert_eq!(sql, "SELECT count() FROM person GROUP ALL");
     }
 
     #[test]
